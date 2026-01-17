@@ -21,3 +21,10 @@ pytesseract                 # Fallback OCR
 python-dotenv               # Loads .env file
 streamlit                   # The Frontend UI
 watchdog                    # Helps Streamlit reload faster
+
+
+# For the OCR to work, you must have these two installed on your computer (not just in Python):
+
+# Poppler (for pdf2image to work).
+
+# Tesseract-OCR (for pytesseract to work).
