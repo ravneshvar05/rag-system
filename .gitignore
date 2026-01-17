@@ -1,0 +1,22 @@
+# --- Security (NEVER UPLOAD THESE) ---
+.env
+.env.local
+
+# --- Python Junk ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+venv/
+.venv/
+
+# --- Project Data ---
+# We ignore the local database folders so they don't bloat the repo
+chroma_db_data/
+temp_data/
+
+# --- IDE Settings ---
+.vscode/
+.idea/
