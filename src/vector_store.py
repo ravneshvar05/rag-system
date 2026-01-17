@@ -9,42 +9,53 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Custom Embedding Class (Simplified)
+# Custom Embedding Class with BATCHING & RETRY Logic
 class HuggingFaceAPIEmbeddings(Embeddings):
     def __init__(self, api_key: str, model_name: str):
         self.client = InferenceClient(token=api_key)
         self.model_name = model_name
     
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of documents with simple retry logic"""
-        embeddings = []
-        for text in texts:
-            # Retry up to 3 times if the API is busy
+        """
+        Embeds documents in BATCHES to avoid hitting API rate limits.
+        """
+        all_embeddings = []
+        batch_size = 32  # Send 32 chunks at a time (Standard practice)
+        
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            
+            # Retry logic for the whole batch
             for attempt in range(3):
                 try:
-                    # Direct call to Hugging Face API
+                    # Send list of texts to HF API
+                    # logger.info(f"    Processing batch {i} to {i+len(batch)}...") 
                     result = self.client.feature_extraction(
-                        text=text,
+                        text=batch,
                         model=self.model_name
                     )
                     
-                    # Handle different return types (list or numpy array)
+                    # Hugging Face sometimes returns different shapes
                     if hasattr(result, 'tolist'):
-                        embedding = result.tolist()
-                    else:
-                        embedding = result
-                        
-                    embeddings.append(embedding)
-                    break # Success! Stop retrying.
+                        result = result.tolist()
                     
+                    all_embeddings.extend(result)
+                    
+                    # ✅ CRITICAL: Wait 0.5s to be polite to the free API
+                    time.sleep(0.5) 
+                    break 
+
                 except Exception as e:
                     if attempt < 2:
-                        time.sleep(2) # Wait 2 seconds before retry
+                        wait_time = 2 * (attempt + 1)
+                        logger.warning(f"⚠️ Batch failed. Retrying in {wait_time}s... Error: {e}")
+                        time.sleep(wait_time)
                     else:
-                        logger.error(f"❌ Failed to embed after 3 attempts: {e}")
+                        logger.error(f"❌ Batch failed permanently: {e}")
                         return []
-        return embeddings
-    
+                        
+        return all_embeddings
+
     def embed_query(self, text: str) -> list[float]:
         """Embed a single query"""
         result = self.embed_documents([text])
@@ -75,7 +86,7 @@ def add_to_vector_db(docs):
     try:
         if not docs:
             logger.warning("⚠️ No documents to add!")
-            return None
+            return 0  # Return 0 chunks if empty
 
         # Split Text
         text_splitter = RecursiveCharacterTextSplitter(
@@ -90,8 +101,10 @@ def add_to_vector_db(docs):
         db = FAISS.from_documents(split_docs, embeddings)
         db.save_local(DB_PATH)
         logger.info(f"💾 Saved FAISS index to {DB_PATH}")
-        return db
+        
+        # ✅ FIX: Return the COUNT of chunks so the API knows the truth.
+        return len(split_docs)
 
     except Exception as e:
         logger.error(f"❌ Error adding to Vector DB: {e}")
-        return None
+        return 0
