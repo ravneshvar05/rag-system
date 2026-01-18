@@ -69,18 +69,35 @@ if prompt := st.chat_input("Ask a question about your documents..."):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                # Send to API (using data= for Form input)
+                # Send to API
                 response = requests.post(f"{API_URL}/chat/", data={"query": prompt})
                 
                 if response.status_code == 200:
-                    answer = response.json().get("answer", "No answer received.")
+                    data = response.json()
+                    
+                    # ✨ NEW: Robust handling for Text + Sources
+                    # We check if 'answer' is a dict (new format) or string (old format/error)
+                    if isinstance(data.get("answer"), dict):
+                        answer_text = data["answer"]["answer"]
+                        sources = data["answer"]["sources"]
+                    else:
+                        # Fallback if the API structure is simple
+                        answer_text = data.get("answer", "No answer received.")
+                        sources = data.get("sources", [])
+
+                    # ✨ Format the final display string with Markdown
+                    final_display = answer_text
+                    if sources:
+                        final_display += "\n\n---\n**📚 Sources:**\n"
+                        for src in sources:
+                            final_display += f"\n* `{src}`"
+
                 else:
-                    answer = f"❌ API Error: {response.text}"
+                    final_display = f"❌ API Error: {response.text}"
                     
             except requests.exceptions.ConnectionError:
-                answer = "❌ Error: Could not connect to API. Is it running?"
+                final_display = "❌ Error: Could not connect to API. Is it running?"
         
-        st.markdown(answer)
-    
-    # 3. Add AI Message to History
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+        # 3. Render and Save to History
+        st.markdown(final_display)
+        st.session_state.messages.append({"role": "assistant", "content": final_display})
