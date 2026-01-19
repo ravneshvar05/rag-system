@@ -6,6 +6,11 @@ API_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Multimodal RAG Agent", page_icon="🤖", layout="centered")
 
+# ✅ FIX 403 ERROR: Disable CORS/XSRF protection for Hugging Face
+import os
+os.environ["STREAMLIT_SERVER_ENABLE_CORS"] = "false"
+os.environ["STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION"] = "false"
+
 # --- HEADER ---
 st.title("🤖 Multimodal RAG Agent")
 st.caption("Powered by Llama-3.3-70B, Groq, and Tesseract")
