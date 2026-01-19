@@ -118,7 +118,9 @@
 # this version remembers multiple documents with source links
 
 import os
-# ✅ CHANGE: Import Local Embeddings
+# ✅ ADDED: Import torch and shutil (needed for GPU check & cleanup)
+import torch
+import shutil
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -127,15 +129,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ✅ CONFIG: Use a fast, local model. 
-# This runs on your CPU, never times out, and needs no API key.
-# It downloads once (~80MB) and stays on your PC.
-MODEL_NAME = "BAAI/bge-m3"
+# ✅ UPDATED: BGE-Small (Fast + Good Quality)
+MODEL_NAME = "BAAI/bge-small-en-v1.5"
 DB_PATH = "faiss_index"
 
-# Initialize Embeddings (Local)
+# ✅ ADDED: Auto-Detect GPU
+# If you have an NVIDIA card, it will switch to 'cuda' automatically.
+device = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"🚀 Embedding Device: {device.upper()}")
+
+# Initialize Embeddings
 try:
-    embeddings = HuggingFaceEmbeddings(model_name=MODEL_NAME)
+    embeddings = HuggingFaceEmbeddings(
+        model_name=MODEL_NAME,
+        model_kwargs={'device': device}, 
+        # ✅ UPDATED: Increased batch size for BGE-Small (faster)
+        encode_kwargs={'normalize_embeddings': True, 'batch_size': 32}
+    )
 except Exception as e:
     logger.error(f"❌ Failed to initialize local embeddings: {e}")
     raise
@@ -143,11 +153,14 @@ except Exception as e:
 def get_vector_db():
     if os.path.exists(DB_PATH):
         # Load locally
-        return FAISS.load_local(
-            DB_PATH, 
-            embeddings, 
-            allow_dangerous_deserialization=True
-        )
+        try:
+            return FAISS.load_local(
+                DB_PATH, 
+                embeddings, 
+                allow_dangerous_deserialization=True
+            )
+        except Exception:
+            return None
     return None
 
 def add_to_vector_db(docs):
@@ -161,8 +174,8 @@ def add_to_vector_db(docs):
 
         # 1. Split Text
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
+            chunk_size=500,
+            chunk_overlap=100
         )
         split_docs = text_splitter.split_documents(docs)
         logger.info(f"✂️ Split into {len(split_docs)} chunks.")
@@ -174,16 +187,25 @@ def add_to_vector_db(docs):
         if os.path.exists(DB_PATH):
             logger.info("🔄 Found existing DB. Loading and appending...")
             
-            # Load existing
-            db = FAISS.load_local(
-                DB_PATH, 
-                embeddings, 
-                allow_dangerous_deserialization=True
-            )
+            try:
+                # Load existing
+                db = FAISS.load_local(
+                    DB_PATH, 
+                    embeddings, 
+                    allow_dangerous_deserialization=True
+                )
+                
+                # Add new chunks
+                db.add_documents(split_docs)
+                logger.info("✅ Appended new documents.")
             
-            # Add new chunks (Fast locally)
-            db.add_documents(split_docs)
-            logger.info("✅ Appended new documents.")
+            except Exception as e:
+                # ✅ ADDED: Safety catch for Dimension Mismatch
+                logger.warning(f"⚠️ Error loading DB (Likely model change): {e}")
+                logger.warning("⚠️ Deleting old DB and creating a fresh one...")
+                if os.path.exists(DB_PATH):
+                    shutil.rmtree(DB_PATH)
+                db = FAISS.from_documents(split_docs, embeddings)
             
         else:
             logger.info("🆕 No DB found. Creating a new one...")
@@ -200,8 +222,6 @@ def add_to_vector_db(docs):
     except Exception as e:
         logger.error(f"❌ Error adding to Vector DB: {e}")
         return 0
-    
-
 
     # ------------------------------------------------------------
     

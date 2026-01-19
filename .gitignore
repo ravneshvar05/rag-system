@@ -21,3 +21,4 @@ temp_data/
 .vscode/
 .idea/
 faiss_index/
+tests/
