@@ -25,3 +25,7 @@ faiss_index/
 # --- Testing ---
 tests/test_document.pdf
 test_invoice.pdf
+
+test_document.pdf
+
+test_invoice.pdf
