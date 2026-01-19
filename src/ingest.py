@@ -8,11 +8,16 @@ from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
 from src.logger import logger
 from dotenv import load_dotenv
+import platform
 
 load_dotenv()
 
 # ✅ CONFIG: Tesseract Path
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+else:
+    # On Hugging Face (Linux), Tesseract is already in the PATH
+    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 def format_table_to_markdown(table):
     """Helper to convert a raw list of lists into a Markdown string."""
