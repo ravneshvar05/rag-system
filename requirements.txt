@@ -12,6 +12,7 @@ huggingface_hub
 sentence-transformers
 faiss-cpu
 pymupdf
+pdfplumber       
 pdf2image
 pillow
 pytesseract
