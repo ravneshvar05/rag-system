@@ -8,7 +8,7 @@ st.set_page_config(page_title="Multimodal RAG Agent", page_icon="🤖", layout="
 
 # --- HEADER ---
 st.title("🤖 Multimodal RAG Agent")
-st.caption("Powered by Llama-3.3-70B, Groq, and Hugging Face")
+st.caption("Powered by Llama-3.3-70B, Groq, and Tesseract")
 
 # --- SIDEBAR: Settings & Upload ---
 with st.sidebar:
@@ -19,13 +19,12 @@ with st.sidebar:
     
     if uploaded_file is not None:
         if st.button("🚀 Ingest Document"):
-            with st.spinner("Processing... (OCR + Embedding)"):
+            with st.spinner("Processing..."):
                 files = {"file": (uploaded_file.name, uploaded_file, uploaded_file.type)}
                 try:
                     response = requests.post(f"{API_URL}/ingest/", files=files)
                     if response.status_code == 200:
-                        data = response.json()
-                        st.success(f"✅ Ingested! Created {data['chunks_created']} chunks.")
+                        st.success(f"✅ {response.json()['message']}")
                     else:
                         st.error(f"❌ Error: {response.text}")
                 except Exception as e:
@@ -33,71 +32,49 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # 2. Clear Database Button
-    st.header("⚙️ Settings")
+    # 2. Clear Database
     if st.button("🗑️ Clear Database"):
         try:
-            response = requests.delete(f"{API_URL}/clear-db/")
-            if response.status_code == 200:
-                st.toast("✅ Database Cleared!", icon="🗑️")
-            else:
-                st.error("❌ Failed to clear DB")
+            requests.delete(f"{API_URL}/clear-db/")
+            st.toast("✅ Database Cleared!", icon="🗑️")
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
 # --- MAIN CHAT INTERFACE ---
 
-# Initialize Chat History
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Hello! Upload a document and ask me anything about it."}
-    ]
+    st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything."}]
 
-# Display Chat History
+# Display History
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # User Input
 if prompt := st.chat_input("Ask a question about your documents..."):
-    # 1. Add User Message to History
+    # 1. Add User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Get AI Response
+    # 2. Get AI Response (Streaming)
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                # Send to API
-                response = requests.post(f"{API_URL}/chat/", data={"query": prompt})
+        try:
+            # ✅ Enable Streaming Request
+            response = requests.post(
+                f"{API_URL}/chat/", 
+                data={"query": prompt}, 
+                stream=True  # <--- Critical
+            )
+            
+            if response.status_code == 200:
+                # ✅ Handle Stream Display
+                full_response = st.write_stream(response.iter_content(chunk_size=10, decode_unicode=True))
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # ✨ NEW: Robust handling for Text + Sources
-                    # We check if 'answer' is a dict (new format) or string (old format/error)
-                    if isinstance(data.get("answer"), dict):
-                        answer_text = data["answer"]["answer"]
-                        sources = data["answer"]["sources"]
-                    else:
-                        # Fallback if the API structure is simple
-                        answer_text = data.get("answer", "No answer received.")
-                        sources = data.get("sources", [])
+                # Save final complete text to history
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+            else:
+                st.error(f"❌ API Error: {response.text}")
 
-                    # ✨ Format the final display string with Markdown
-                    final_display = answer_text
-                    if sources:
-                        final_display += "\n\n---\n**📚 Sources:**\n"
-                        for src in sources:
-                            final_display += f"\n* `{src}`"
-
-                else:
-                    final_display = f"❌ API Error: {response.text}"
-                    
-            except requests.exceptions.ConnectionError:
-                final_display = "❌ Error: Could not connect to API. Is it running?"
-        
-        # 3. Render and Save to History
-        st.markdown(final_display)
-        st.session_state.messages.append({"role": "assistant", "content": final_display})
+        except requests.exceptions.ConnectionError:
+            st.error("❌ Error: Could not connect to API. Is it running?")

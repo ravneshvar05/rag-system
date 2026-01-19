@@ -1,9 +1,12 @@
 import shutil
 import os
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from src.ingest import load_file
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
+# ✅ FIX: Import 'load_file' (Matches your ingest.py)
+from src.ingest import load_file 
 from src.vector_store import add_to_vector_db
 from src.rag import ask_question
+from src.logger import logger
 
 app = FastAPI(title="Multimodal RAG API", version="2.0")
 
@@ -11,8 +14,30 @@ app = FastAPI(title="Multimodal RAG API", version="2.0")
 def home():
     return {"message": "Multimodal RAG System is Online 🟢"}
 
+# --- BACKGROUND TASK ---
+def background_ingest(file_path: str, file_name: str):
+    try:
+        logger.info(f"⏳ Starting background ingestion for {file_name}...")
+        
+        # Use load_file here
+        docs = load_file(file_path)
+        
+        if docs:
+            count = add_to_vector_db(docs)
+            logger.info(f"✅ Background ingestion finished. Added {count} chunks.")
+        else:
+            logger.warning(f"⚠️ No text extracted from {file_name}.")
+    except Exception as e:
+        logger.error(f"❌ Background Task Failed: {e}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 @app.post("/ingest/")
-async def ingest_document(file: UploadFile = File(...)):
+async def ingest_document(
+    background_tasks: BackgroundTasks, 
+    file: UploadFile = File(...)
+):
     try:
         temp_dir = "temp_data"
         os.makedirs(temp_dir, exist_ok=True)
@@ -20,19 +45,14 @@ async def ingest_document(file: UploadFile = File(...)):
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
-        docs = load_file(file_path)
         
-        if not docs:
-            raise HTTPException(status_code=400, detail="Could not extract text.")
-            
-        # ✅ FIX: Capture the real number of chunks returned by the function
-        real_chunk_count = add_to_vector_db(docs)
+        # 🚀 Send to Background
+        background_tasks.add_task(background_ingest, file_path, file.filename)
         
         return {
             "filename": file.filename, 
-            "status": "Successfully Ingested", 
-            "chunks_created": real_chunk_count 
+            "status": "Accepted", 
+            "message": "File received! Processing in background."
         }
 
     except Exception as e:
@@ -41,28 +61,21 @@ async def ingest_document(file: UploadFile = File(...)):
 @app.post("/chat/")
 def chat_with_docs(query: str = Form(...)):
     """
-    Ask a question. 
-    Uses Form data: Easy to type in Swagger, but supports long text safely.
+    Streaming Chat Endpoint.
     """
-    answer = ask_question(query)
-    return {"question": query, "answer": answer}
+    # Get the generator function from rag.py
+    response_generator = ask_question(query)
+    
+    # Return it as a stream
+    return StreamingResponse(response_generator, media_type="text/plain")
 
-# ✅ NEW: The Safety Reset Switch
 @app.delete("/clear-db/")
 def clear_database():
-    """
-    ⚠️ Safe Reset: Deletes the vector database folder.
-    This allows you to start fresh. The app handles the missing folder gracefully.
-    """
     db_path = "faiss_index"
-    try:
-        if os.path.exists(db_path):
-            shutil.rmtree(db_path)
-            return {"status": "✅ Database cleared successfully!"}
-        else:
-            return {"status": "⚠️ Database was already empty."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if os.path.exists(db_path):
+        shutil.rmtree(db_path)
+        return {"status": "✅ Database cleared successfully!"}
+    return {"status": "⚠️ Database was already empty."}
 # @app.post("/chat/")
 # def chat_with_docs(request: QuestionRequest):
 #     """

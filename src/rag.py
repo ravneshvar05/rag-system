@@ -202,11 +202,10 @@
 # sending source
 
 import os
-from collections import Counter # <--- Added for filtering logic
+from collections import Counter
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 from src.vector_store import get_vector_db
 from src.logger import logger
 from dotenv import load_dotenv
@@ -214,10 +213,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ==========================================
-# 1. SETUP MODELS (Smart vs. Fast)
+# 1. SETUP MODELS
 # ==========================================
-
-# Model A: The Genius (Llama 3.3 70B)
 llm_70b = ChatGroq(
     model="llama-3.3-70b-versatile",
     temperature=0.3,
@@ -225,7 +222,6 @@ llm_70b = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-# Model B: The Backup (Llama 3.1 8B)
 llm_8b = ChatGroq(
     model="llama-3.1-8b-instant",
     temperature=0.3,
@@ -234,7 +230,7 @@ llm_8b = ChatGroq(
 )
 
 # ==========================================
-# 2. SETUP PROFESSIONAL PROMPT
+# 2. PROMPT
 # ==========================================
 template_text = """
 You are a highly intelligent and professional AI assistant.
@@ -254,121 +250,96 @@ Question:
 
 Answer:
 """
-
 prompt_template = ChatPromptTemplate.from_template(template_text)
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 # ==========================================
-# 3. ASK QUESTION FUNCTION (With Filtering!)
+# 3. ASK QUESTION (STREAMING GENERATOR)
 # ==========================================
 def ask_question(query: str):
     """
-    Retrieves docs, FILTERS for the single best file, extracts sources, 
-    and tries 70B model (falling back to 8B).
+    GENERATOR: Yields the answer token-by-token.
     """
     try:
-        logger.info(f"❓ Question: {query}")
+        logger.info(f"❓ Streaming Question: {query}")
         
-        # 1. Load DB
         db = get_vector_db()
         if not db:
-            return {"answer": "⚠️ Database is empty! Please upload a document first.", "sources": []}
+            yield "⚠️ Database is empty! Please upload a document first."
+            return
 
-        # 2. Search (Fetch top 6 chunks to find the "Dominant" file)
+        # 1. Search (Fetch top 6 to find the Winner)
         retriever = db.as_retriever(search_kwargs={"k": 6})
         all_docs = retriever.invoke(query)
         
         if not all_docs:
-             return {"answer": "I cannot find any relevant information in the documents.", "sources": []}
+            yield "I cannot find any relevant information in the documents."
+            return
 
-        # --- 🛡️ FILTER LOGIC: WINNER TAKES ALL ---
-        # Count which file appears most often in the results
+        # --- 🛡️ FILTER: WINNER TAKES ALL ---
         source_counts = Counter(doc.metadata.get("source", "Unknown") for doc in all_docs)
-        
-        # Identify the "Winner" (The file with the most relevant chunks)
         best_source = source_counts.most_common(1)[0][0]
         
-        # Filter: Keep ONLY chunks from the Best Source
-        # We also limit it to the top 4 chunks of that specific file
+        # Keep only chunks from the winner (Top 4)
         final_docs = [doc for doc in all_docs if doc.metadata.get("source") == best_source][:4]
         
-        logger.info(f"🎯 Focused on source: {os.path.basename(best_source)}")
-        # ------------------------------------------
+        logger.info(f"🎯 Context locked to: {os.path.basename(best_source)}")
 
-        # 3. Extract Sources (Now guaranteed to be from one file)
-        sources = []
+        # 2. Extract Sources (Prepare string for later)
+        source_list = []
         for doc in final_docs:
-            source_path = doc.metadata.get("source", "Unknown File")
+            source_path = doc.metadata.get("source", "Unknown")
             source_name = os.path.basename(source_path)
-            page_num = doc.metadata.get("page", "N/A")
-            source_str = f"{source_name} (Page {page_num})"
-            
-            if source_str not in sources:
-                sources.append(source_str)
+            page = doc.metadata.get("page", "N/A")
+            s_str = f"{source_name} (Page {page})"
+            if s_str not in source_list:
+                source_list.append(s_str)
 
-        # 4. Prepare Context using ONLY the filtered docs
         context_text = format_docs(final_docs)
 
-        # 5. Define the Helper to run the LLM
-        def run_chain(model_to_use):
-            chain = (
-                prompt_template 
-                | model_to_use 
-                | StrOutputParser()
-            )
-            return chain.invoke({"context": context_text, "question": query})
+        # 3. Define Chain Helper
+        def get_chain(model):
+            return prompt_template | model | StrOutputParser()
 
-        # 6. Attempt 1: Try the Smart Model (70B)
+        # 4. STREAM THE ANSWER
+        # We use chain.stream() instead of chain.invoke()
         try:
-            logger.info("🤖 Attempting with Llama-3.3-70B...")
-            answer = run_chain(llm_70b)
-        
+            # Try 70B Model First
+            chain = get_chain(llm_70b)
+            for chunk in chain.stream({"context": context_text, "question": query}):
+                yield chunk  # <--- Send this token immediately
         except Exception as e:
-            error_msg = str(e).lower()
-            if "429" in error_msg or "rate_limit" in error_msg:
-                logger.warning("⚠️ 70B Rate Limit Hit! Falling back to 8B model...")
-                # 7. Attempt 2: Fallback to Fast Model (8B)
-                answer = run_chain(llm_8b)
-            else:
-                raise e
+            # Fallback to 8B if Rate Limit hits
+            logger.warning(f"⚠️ 70B Error ({e}). Falling back to 8B.")
+            try:
+                chain = get_chain(llm_8b)
+                for chunk in chain.stream({"context": context_text, "question": query}):
+                    yield chunk
+            except Exception as inner_e:
+                yield f"Error generating answer: {inner_e}"
 
-        logger.info("✅ Answer generated successfully")
-        
-        return {
-            "answer": answer,
-            "sources": sources
-        }
+        # 5. STREAM THE SOURCES (At the end)
+        if source_list:
+            yield "\n\n---\n**📚 Source (Winner):**\n"
+            for source in source_list:
+                yield f"* `{source}`\n"
 
     except Exception as e:
-        logger.error(f"❌ RAG Error: {e}")
-        return {
-            "answer": f"Sorry, an error occurred: {str(e)}", 
-            "sources": []
-        }
+        yield f"❌ Error: {str(e)}"
 
 # ==========================================
-# 4. DIRECT TESTING BLOCK
+# 4. TEST BLOCK (For Terminal)
 # ==========================================
 if __name__ == "__main__":
-    print("\n--- 🧪 RAG SYSTEM TEST (Single Source Mode) ---")
-    user_query = input("Type a question for your document: ")
-    print("\nThinking...")
+    print("\n--- 🧪 STREAMING TEST ---")
+    # Simulate a question
+    user_query = input("Type a question: ")
+    print("\n🤖 AI: ", end="", flush=True)
     
-    result = ask_question(user_query)
+    # Iterate over the generator to simulate streaming
+    for token in ask_question(user_query):
+        print(token, end="", flush=True)
     
-    print("\n" + "="*40)
-    print("🤖 AI ANSWER:")
-    print("="*40)
-    print(result["answer"])
-    
-    print("\n" + "-"*40)
-    print("📚 SOURCE (Winner File):")
-    print("-" * 40)
-    if result["sources"]:
-        for s in result["sources"]:
-            print(f"• {s}")
-    else:
-        print("No sources found.")
-    print("="*40 + "\n")
+    print("\n\n" + "="*40)

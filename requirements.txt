@@ -22,6 +22,8 @@ python-dotenv               # Loads .env file
 streamlit                   # The Frontend UI
 watchdog                    # Helps Streamlit reload faster
 
+# llama-parse
+
 
 # For the OCR to work, you must have these two installed on your computer (not just in Python):
 

@@ -118,81 +118,31 @@
 # this version remembers multiple documents with source links
 
 import os
-import time
+# ✅ CHANGE: Import Local Embeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.embeddings import Embeddings
-from huggingface_hub import InferenceClient
 from src.logger import logger
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Custom Embedding Class with BATCHING & RETRY Logic
-class HuggingFaceAPIEmbeddings(Embeddings):
-    def __init__(self, api_key: str, model_name: str):
-        self.client = InferenceClient(token=api_key)
-        self.model_name = model_name
-    
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """
-        Embeds documents in BATCHES to avoid hitting API rate limits.
-        """
-        all_embeddings = []
-        batch_size = 32  # Send 32 chunks at a time (Standard practice)
-        
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            
-            # Retry logic for the whole batch
-            for attempt in range(3):
-                try:
-                    # Send list of texts to HF API
-                    result = self.client.feature_extraction(
-                        text=batch,
-                        model=self.model_name
-                    )
-                    
-                    # Hugging Face sometimes returns different shapes
-                    if hasattr(result, 'tolist'):
-                        result = result.tolist()
-                    
-                    all_embeddings.extend(result)
-                    
-                    # ✅ CRITICAL: Wait 0.5s to be polite to the free API
-                    time.sleep(0.5) 
-                    break 
-
-                except Exception as e:
-                    if attempt < 2:
-                        wait_time = 2 * (attempt + 1)
-                        logger.warning(f"⚠️ Batch failed. Retrying in {wait_time}s... Error: {e}")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(f"❌ Batch failed permanently: {e}")
-                        return []
-                        
-        return all_embeddings
-
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a single query"""
-        result = self.embed_documents([text])
-        return result[0] if result else []
-
-# Initialize Embeddings
-try:
-    embeddings = HuggingFaceAPIEmbeddings(
-        api_key=os.getenv("HF_TOKEN"),
-        model_name="BAAI/bge-m3"
-    )
-except Exception as e:
-    logger.error(f"❌ Failed to initialize embeddings: {e}")
-    raise
-
+# ✅ CONFIG: Use a fast, local model. 
+# This runs on your CPU, never times out, and needs no API key.
+# It downloads once (~80MB) and stays on your PC.
+MODEL_NAME = "BAAI/bge-m3"
 DB_PATH = "faiss_index"
+
+# Initialize Embeddings (Local)
+try:
+    embeddings = HuggingFaceEmbeddings(model_name=MODEL_NAME)
+except Exception as e:
+    logger.error(f"❌ Failed to initialize local embeddings: {e}")
+    raise
 
 def get_vector_db():
     if os.path.exists(DB_PATH):
+        # Load locally
         return FAISS.load_local(
             DB_PATH, 
             embeddings, 
@@ -212,10 +162,13 @@ def add_to_vector_db(docs):
         # 1. Split Text
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
-            chunk_overlap=100
+            chunk_overlap=200
         )
         split_docs = text_splitter.split_documents(docs)
         logger.info(f"✂️ Split into {len(split_docs)} chunks.")
+
+        if not split_docs:
+            return 0
 
         # 2. Check if DB exists to decide: Create New vs. Append
         if os.path.exists(DB_PATH):
@@ -228,7 +181,7 @@ def add_to_vector_db(docs):
                 allow_dangerous_deserialization=True
             )
             
-            # Add new chunks (The embedding class handles batching automatically)
+            # Add new chunks (Fast locally)
             db.add_documents(split_docs)
             logger.info("✅ Appended new documents.")
             
@@ -247,3 +200,8 @@ def add_to_vector_db(docs):
     except Exception as e:
         logger.error(f"❌ Error adding to Vector DB: {e}")
         return 0
+    
+
+
+    # ------------------------------------------------------------
+    
