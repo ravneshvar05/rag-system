@@ -23,4 +23,5 @@ faiss_index/
 .DS_Store
 
 # --- Testing ---
-tests/
+tests/test_document.pdf
+test_invoice.pdf
