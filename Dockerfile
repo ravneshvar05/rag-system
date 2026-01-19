@@ -29,12 +29,11 @@ RUN mkdir -p temp_data faiss_index && chmod -R 777 temp_data faiss_index
 EXPOSE 7860
 
 # 6. The "Dual-Process" Start Script
-# We write a mini-script right here to launch both apps.
-# - Uvicorn (Backend) runs on 8000 in the background (&)
-# - Streamlit (Frontend) runs on 7860 in the foreground
+# ✅ FIXED: Added --server.enableCORS=false and --server.enableXsrfProtection=false
+# This prevents the "AxiosError: 403" on file uploads.
 RUN echo '#!/bin/bash\n\
 uvicorn app:app --host 0.0.0.0 --port 8000 & \n\
-streamlit run ui.py --server.port 7860 --server.address 0.0.0.0\n\
+streamlit run ui.py --server.port 7860 --server.address 0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false\n\
 ' > start.sh && chmod +x start.sh
 
 # 7. Start the App
