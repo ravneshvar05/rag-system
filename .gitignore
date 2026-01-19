@@ -1,24 +1,26 @@
-# --- Security (NEVER UPLOAD THESE) ---
+# --- Security (NEVER UPLOAD) ---
 .env
 .env.local
 
-# --- Python Junk ---
+# --- Python & Virtual Environment ---
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-.env
 venv/
 .venv/
+env/
 
-# --- Project Data ---
-# We ignore the local database folders so they don't bloat the repo
+# --- Project Data (Local DBs) ---
 chroma_db_data/
 temp_data/
+faiss_index/
 
 # --- IDE Settings ---
 .vscode/
 .idea/
-faiss_index/
+.DS_Store
+
+# --- Testing ---
 tests/

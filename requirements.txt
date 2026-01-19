@@ -1,32 +1,18 @@
-# --- Core Framework ---
-langchain==0.3.0
-langchain-community==0.3.0
-langchain-core==0.3.0
-
-# --- AI Models (LLM & Embeddings) ---
-langchain-google-genai      # For Gemini 1.5 Flash
-langchain-huggingface       # For BGE-M3 Embeddings
-huggingface_hub             # To download models
-
-# --- Database ---
-faiss-cpu                 # The local vector DB engine
-
-# --- File Handling (OCR & PDF) ---
-pymupdf                     # Fast PDF reading
-pdf2image                   # Converts PDF pages to images (for OCR)
-pillow                      # Image processing
-pytesseract                 # Fallback OCR
-
-# --- Environment & UI ---
-python-dotenv               # Loads .env file
-streamlit                   # The Frontend UI
-watchdog                    # Helps Streamlit reload faster
-
-# llama-parse
-
-
-# For the OCR to work, you must have these two installed on your computer (not just in Python):
-
-# Poppler (for pdf2image to work).
-
-# Tesseract-OCR (for pytesseract to work).
+fastapi
+uvicorn
+python-multipart
+streamlit
+watchdog
+langchain
+langchain-community
+langchain-core
+langchain-groq
+langchain-huggingface
+huggingface_hub
+sentence-transformers
+faiss-cpu
+pymupdf
+pdf2image
+pillow
+pytesseract
+python-dotenv
