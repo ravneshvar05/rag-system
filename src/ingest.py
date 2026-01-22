@@ -9,6 +9,8 @@ from langchain_core.documents import Document
 from src.logger import logger
 from dotenv import load_dotenv
 import platform
+import docx
+import pandas as pd
 
 load_dotenv()
 
@@ -69,7 +71,34 @@ def load_file(file_path):
 
         if ext == ".txt":
             loader = TextLoader(file_path, encoding="utf-8")
+            loader = TextLoader(file_path, encoding="utf-8")
             return loader.load()
+
+        elif ext == ".md":
+            logger.info("📝 Loading Markdown file...")
+            loader = TextLoader(file_path, encoding="utf-8")
+            return loader.load()
+
+        elif ext == ".docx":
+            logger.info("📝 Loading Word document...")
+            doc = docx.Document(file_path)
+            full_text = [para.text for para in doc.paragraphs]
+            text = "\n".join(full_text)
+            return [Document(page_content=text, metadata={"source": file_path})]
+
+        elif ext == ".csv":
+            logger.info("📊 Loading CSV file...")
+            df = pd.read_csv(file_path)
+            
+            # Convert each row to a sensible text format
+            text_lines = []
+            for index, row in df.iterrows():
+                # "Column: Value | Column: Value"
+                row_text = " | ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+                text_lines.append(row_text)
+            
+            combined_text = "\n".join(text_lines)
+            return [Document(page_content=combined_text, metadata={"source": file_path})]
 
         elif ext == ".pdf":
             documents = []

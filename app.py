@@ -15,41 +15,50 @@ def home():
     return {"message": "Multimodal RAG System is Online 🟢"}
 
 @app.post("/ingest/")
-async def ingest_document(file: UploadFile = File(...)):
+async def ingest_documents(files: list[UploadFile] = File(...)):
     """
-    Ingests a file synchronously so the UI waits for it to finish.
+    Ingests multiple files synchronously.
     """
     try:
         temp_dir = "temp_data"
         os.makedirs(temp_dir, exist_ok=True)
-        file_path = os.path.join(temp_dir, file.filename)
         
-        # 1. Save the file locally
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        all_docs = []
+        file_summary = []
         
-        logger.info(f"⏳ Starting ingestion for {file.filename}...")
-
-        # 2. Process the file (Synchronously)
-        # We run this NOW so the UI waits for the result
-        docs = load_file(file_path)
+        for file in files:
+            file_path = os.path.join(temp_dir, file.filename)
+            
+            # 1. Save locally
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            
+            logger.info(f"⏳ Starting ingestion for {file.filename}...")
+            
+            # 2. Process file
+            docs = load_file(file_path)
+            if docs:
+                all_docs.extend(docs)
+                file_summary.append(file.filename)
+            
+            # 3. Clean up immediate file
+            if os.path.exists(file_path):
+                os.remove(file_path)
         
-        chunk_count = 0
-        if docs:
-            chunk_count = add_to_vector_db(docs)
-            logger.info(f"✅ Ingestion finished. Added {chunk_count} chunks.")
-            message = f"Successfully ingested {file.filename} ({chunk_count} chunks)."
-        else:
-            logger.warning(f"⚠️ No text extracted from {file.filename}.")
-            message = f"Warning: No text found in {file.filename}."
+        if not all_docs:
+            return {
+                "status": "warning", 
+                "message": "⚠️ No text extracted from any of the uploaded files."
+            }
 
-        # 3. Clean up
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        # 4. Add ALL docs to Vector DB at once
+        chunk_count = add_to_vector_db(all_docs)
+        logger.info(f"✅ Ingestion finished. Added {chunk_count} chunks from {len(file_summary)} files.")
+        
+        message = f"Successfully ingested {len(file_summary)} files ({chunk_count} chunks)."
 
-        # 4. Return success message
         return {
-            "filename": file.filename, 
+            "filenames": file_summary, 
             "status": "success", 
             "message": message
         }

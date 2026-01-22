@@ -202,6 +202,7 @@
 # sending source
 
 import os
+import time
 from collections import Counter
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
@@ -212,12 +213,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from sentence_transformers import CrossEncoder
+
 # ==========================================
-# 1. SETUP MODELS
+# 2. SETUP MODELS
 # ==========================================
+try:
+    # Load Cross-Encoder for Re-Ranking
+    # "ms-marco-MiniLM-L-6-v2" is fast and effective for passing to LLM
+    logger.info("⏳ Loading Cross-Encoder for Re-ranking...")
+    cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    logger.info("✅ Cross-Encoder loaded.")
+except Exception as e:
+    logger.warning(f"⚠️ Could not load Cross-Encoder: {e}. Re-ranking will be skipped.")
+    cross_encoder = None
+
 llm_70b = ChatGroq(
     model="llama-3.3-70b-versatile",
-    temperature=0.3,  # Slightly higher for more natural responses
+    temperature=0.3,
     max_tokens=2500,
     api_key=os.getenv("GROQ_API_KEY")
 )
@@ -297,101 +310,240 @@ def format_docs(docs):
     return "\n\n---\n\n".join(formatted)
 
 # ==========================================
-# 3. IMPROVED RETRIEVAL STRATEGY
+# 3. IMPROVED RETRIEVAL STRATEGY (RE-RANKING)
 # ==========================================
 def get_relevant_docs(query: str, db):
     """
-    Enhanced retrieval with multiple strategies
+    Enhanced retrieval with Re-Ranking (Cross-Encoder)
     """
-    # Strategy 1: Get more candidates initially
+    if not db:
+        return None, []
+
+    # Step 1: Retrieve Broad Set (Top 12)
+    # Vector search is fast but approximate. We cast a wide net.
     retriever = db.as_retriever(search_kwargs={"k": 12})
-    all_docs = retriever.invoke(query)
+    initial_docs = retriever.invoke(query)
     
-    if not all_docs:
+    if not initial_docs:
         return None, []
     
-    # Strategy 2: Analyze source distribution
-    source_counts = Counter(doc.metadata.get("source", "Unknown") for doc in all_docs)
+    # Step 2: Re-Rank with Cross-Encoder (The "Judge")
+    if cross_encoder:
+        try:
+            # Prepare pairs [Query, Doc Text]
+            passages = [doc.page_content for doc in initial_docs]
+            ranks = cross_encoder.rank(query, passages)
+            
+            # Sort by score (descending)
+            # ranks is a list of {'corpus_id': int, 'score': float}
+            sorted_ranks = sorted(ranks, key=lambda x: x['score'], reverse=True)
+            
+            # ✅ Threshold Filter: Reject chunks with very low relevance scores
+            # Cross-Encoder scores range typically from -10 to +10.
+            # > 0 is usually relevant. > -1 is lenient. > -10 is everything.
+            MIN_SCORE = -2.0  
+            filtered_ranks = [item for item in sorted_ranks if item['score'] > MIN_SCORE]
+
+            if not filtered_ranks:
+                logger.warning("⚠️ All documents filtered out by threshold! Using top 1 fallback.")
+                filtered_ranks = [sorted_ranks[0]] # Fallback to at least one
+
+            # Keep Top 5
+            top_indices = [item['corpus_id'] for item in filtered_ranks[:5]]
+            final_docs = [initial_docs[i] for i in top_indices]
+            
+            logger.info(f"✨ Re-ranked {len(initial_docs)}->{len(final_docs)} docs. Top score: {filtered_ranks[0]['score']:.4f}")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Re-ranking failed ({e}). Falling back to vector order.")
+            final_docs = initial_docs[:5]
+    else:
+        # Fallback if no cross-encoder
+        final_docs = initial_docs[:5]
     
-    # Get top 2 sources (in case winner doesn't have full answer)
-    top_sources = [source for source, _ in source_counts.most_common(2)]
-    
-    # Strategy 3: Keep best chunks from top sources (up to 5 chunks)
-    final_docs = []
-    for source in top_sources:
-        source_docs = [doc for doc in all_docs if doc.metadata.get("source") == source]
-        final_docs.extend(source_docs[:3])  # Top 3 from each source
-    
-    final_docs = final_docs[:6]  # Max 5 chunks total
-    
-    # Return primary source name and docs
-    primary_source = os.path.basename(top_sources[0])
+    # Get primary source name
+    if final_docs:
+        primary_source = os.path.basename(final_docs[0].metadata.get("source", "Unknown"))
+    else:
+        primary_source = "Unknown"
+
     return primary_source, final_docs
 
 # ==========================================
 # 4. ASK QUESTION (STREAMING GENERATOR)
 # ==========================================
-def ask_question(query: str):
+# ==========================================
+# 4. QUERY DECOMPOSITION (NEW)
+# ==========================================
+# ==========================================
+# 4. QUERY DECOMPOSITION (NEW)
+# ==========================================
+import re
+
+def decompose_query(query: str) -> list[str]:
     """
-    GENERATOR: Yields the answer token-by-token with improved reliability
+    Uses a Hybrid Strategy (LLM + Heuristics + Regex) to split queries.
     """
     try:
-        logger.info(f"❓ Streaming Question: {query}")
+        # Strategy 1: LLM Decomposition (The "Smart" Way)
+        # Refined prompt to prevent over-splitting dependent clauses
+        system = (
+            "You are a query logic engine. "
+            "Split the user's input into a list of distinct sub-questions ONLY if they are independent queries. "
+            "DO NOT split if the user is asking for a list of items, examples, explanations, or dependent questions. "
+            "Rules:"
+            "1. 'What is the revenue and who is CEO?' -> ['What is the revenue?', 'Who is CEO?'] (Split)"
+            "2. 'Which vector DB is best and why?' -> ['Which vector DB is best and why?'] (Keep Together - Dependent Clause)"
+            "3. 'Show me scores for math, science, and physics' -> ['Show me scores for math, science, and physics'] (Keep Single)"
+            "4. 'Explain X and also how it relates to Y' -> ['Explain X and also how it relates to Y'] (Keep Together - Relation)"
+            "Return ONLY a JSON list of strings."
+        )
+        
+        start_time = time.time()
+        
+        # Use simple non-streaming call
+        response = llm_8b.invoke([
+            ("system", system),
+            ("user", query)
+        ])
+        
+        content = response.content.strip()
+        sub_queries = []
+        
+        # Clean up potential markdown code blocks
+        content = content.replace("```json", "").replace("```", "").strip()
+        
+        import ast
+        try:
+            # Try to parse python/json list syntax
+            parsed = ast.literal_eval(content)
+            if isinstance(parsed, list):
+                # Ensure flat list of strings
+                for item in parsed:
+                    if isinstance(item, list):
+                        sub_queries.extend([str(sub) for sub in item])
+                    else:
+                        sub_queries.append(str(item))
+            
+        except:
+            pass # Fallback to empty -> triggers heuristic/regex check
+
+        # Strategy 2: Heuristic Validation (The "Safety Net")
+        # Check if split result is valid. If it produced tiny fragments (e.g., "Why?"), reject it.
+        is_valid_split = True
+        if sub_queries and len(sub_queries) > 1:
+            for q in sub_queries:
+                # If a sub-question is < 4 words, it's suspiciously short (likely a broken split)
+                if len(q.split()) < 4:
+                    is_valid_split = False
+                    logger.warning(f"⚠️ Rejecting split due to short fragment: '{q}'")
+                    break
+        
+        if not is_valid_split or not sub_queries:
+            # If LLM failed or produced bad splits, try Regex or keep original
+            logger.info("⚠️ LLM split rejected or empty. Falling back to simple logic.")
+            sub_queries = []
+
+        # Strategy 3: Regex Fallback (The "Old Reliable")
+        # If we still don't have sub-queries (or rejected LLM's), use Regex if '?' is present multiple times
+        if not sub_queries:
+             # Split by '?' followed by space/newline, but keep the '?'
+            potential_splits = re.split(r'(?<=\?)\s+', query)
+            potential_splits = [s.strip() for s in potential_splits if s.strip()]
+            
+            if len(potential_splits) > 1:
+                sub_queries = potential_splits
+                logger.info(f"🧩 Regex Decomposition used: {sub_queries}")
+            else:
+                sub_queries = [query]
+
+        logger.info(f"🧩 Final Decomposition ({time.time() - start_time:.2f}s): {sub_queries}")
+        return sub_queries
+
+    except Exception as e:
+        logger.warning(f"⚠️ Decomposition failed: {e}. Using original query.")
+        return [query]
+
+# ==========================================
+# 5. ASK QUESTION (STREAMING GENERATOR)
+# ==========================================
+def ask_question(query: str):
+    """
+    GENERATOR: Handles multi-step reasoning by decomposing the query first.
+    """
+    try:
+        logger.info(f"❓ Processing Query: {query}")
         
         db = get_vector_db()
         if not db:
             yield "⚠️ Database is empty! Please upload a document first."
             return
 
-        # 1. Get relevant documents
-        primary_source, final_docs = get_relevant_docs(query, db)
+        # 1. Decompose Query
+        sub_questions = decompose_query(query)
         
-        if not final_docs:
-            yield "I cannot find any relevant information in the documents."
-            return
+        if len(sub_questions) > 1:
+            yield f"🔍 **Decomposed into {len(sub_questions)} questions:**\n"
+            for q in sub_questions:
+                yield f"* {q}\n"
+            yield "\n---\n"
+        
+        # 2. Iterate through each sub-question
+        for i, sub_q in enumerate(sub_questions):
+            
+            if len(sub_questions) > 1:
+                yield f"### ❓ {sub_q}\n"
 
-        logger.info(f"🎯 Primary source: {primary_source} ({len(final_docs)} chunks)")
+            # A. Get relevant documents for THIS sub-question
+            primary_source, final_docs = get_relevant_docs(sub_q, db)
+            
+            if not final_docs:
+                yield f"I cannot find any relevant information for: *{sub_q}*\n\n"
+                continue
 
-        # 2. Prepare context with better formatting
-        context_text = format_docs(final_docs)
+            # B. Prepare context
+            context_text = format_docs(final_docs)
 
-        # 3. Extract unique sources for citation
-        source_list = []
-        for doc in final_docs:
-            source_path = doc.metadata.get("source", "Unknown")
-            source_name = os.path.basename(source_path)
-            page = doc.metadata.get("page", "N/A")
-            s_str = f"{source_name} (Page {page})"
-            if s_str not in source_list:
-                source_list.append(s_str)
+            # C. Extract sources
+            source_list = []
+            for doc in final_docs:
+                source_path = doc.metadata.get("source", "Unknown")
+                source_name = os.path.basename(source_path)
+                page = doc.metadata.get("page", "N/A")
+                s_str = f"{source_name} (Page {page})"
+                if s_str not in source_list:
+                    source_list.append(s_str)
 
-        # 4. Define Chain Helper
-        def get_chain(model):
-            return prompt_template | model | StrOutputParser()
+            # D. Define Chain Helper
+            def get_chain(model):
+                return prompt_template | model | StrOutputParser()
 
-        # 5. STREAM THE ANSWER with fallback
-        answer_generated = False
-        try:
-            chain = get_chain(llm_70b)
-            for chunk in chain.stream({"context": context_text, "question": query}):
-                yield chunk
-                answer_generated = True
-        except Exception as e:
-            logger.warning(f"⚠️ 70B Error ({e}). Falling back to 8B.")
+            # E. STREAM THE ANSWER
+            answer_generated = False
             try:
-                chain = get_chain(llm_8b)
-                for chunk in chain.stream({"context": context_text, "question": query}):
+                # Use 8B for speed in multi-hop, or 70B for quality? 
+                # User has free tier, let's stick to 70B for quality answer, 8B was for routing.
+                chain = get_chain(llm_70b)
+                for chunk in chain.stream({"context": context_text, "question": sub_q}):
                     yield chunk
                     answer_generated = True
-            except Exception as inner_e:
-                yield f"Error generating answer: {inner_e}"
-                return
+            except Exception as e:
+                logger.warning(f"⚠️ 70B Error ({e}). Falling back to 8B.")
+                try:
+                    chain = get_chain(llm_8b)
+                    for chunk in chain.stream({"context": context_text, "question": sub_q}):
+                        yield chunk
+                        answer_generated = True
+                except Exception as inner_e:
+                    yield f"Error generating answer: {inner_e}"
 
-        # 6. STREAM THE SOURCES (if answer was generated)
-        if answer_generated and source_list:
-            yield "\n\n---\n**📚 Sources:**\n"
-            for source in source_list:
-                yield f"* `{source}`\n"
+            # F. STREAM SOURCES
+            if answer_generated and source_list:
+                yield "\n\n**Sources:** " + ", ".join([f"`{s}`" for s in source_list]) + "\n"
+            
+            # G. Separator for next question
+            if i < len(sub_questions) - 1:
+                yield "\n\n---\n\n"
 
     except Exception as e:
         logger.error(f"❌ Error in ask_question: {str(e)}")

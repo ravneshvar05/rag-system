@@ -174,8 +174,8 @@ def add_to_vector_db(docs):
 
         # 1. Split Text
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=100
+            chunk_size=1000,
+            chunk_overlap=200
         )
         split_docs = text_splitter.split_documents(docs)
         logger.info(f"✂️ Split into {len(split_docs)} chunks.")
