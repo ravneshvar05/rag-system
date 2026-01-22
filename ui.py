@@ -115,8 +115,8 @@ with st.sidebar:
     
     st.markdown("### 📤 Upload Documents")
     uploaded_files = st.file_uploader(
-        "Supported: PDF, DOCX, TXT, CSV, MD, Images", 
-        type=["pdf", "txt", "png", "jpg", "jpeg", "md", "docx", "csv"],
+        "Supported: PDF, DOCX, TXT, CSV, MD, Images, ZIP", 
+        type=["pdf", "txt", "png", "jpg", "jpeg", "md", "docx", "csv", "zip"],
         accept_multiple_files=True
     )
     
@@ -131,7 +131,8 @@ with st.sidebar:
                     if response.status_code == 200:
                         data = response.json()
                         st.toast(data['message'], icon="✅")
-                        st.balloons()
+                        # st.balloons()
+                        st.success("Files ingested!")
                     else:
                         st.error(f"❌ Error: {response.text}")
                 except Exception as e:

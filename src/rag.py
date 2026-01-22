@@ -497,6 +497,13 @@ def ask_question(query: str):
             # A. Get relevant documents for THIS sub-question
             primary_source, final_docs = get_relevant_docs(sub_q, db)
             
+             # NOTE: If the context is null or nothing has been retrieved as context, 
+            # then don't call LLM and just simply say "I don't know based on context".
+            #
+            # if not final_docs:
+            #     yield "I don't know based on context"
+            #     return
+
             if not final_docs:
                 yield f"I cannot find any relevant information for: *{sub_q}*\n\n"
                 continue
